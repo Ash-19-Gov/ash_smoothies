@@ -1,9 +1,8 @@
 
 import streamlit as st
+import pandas as pd
 import requests
-import json
-import re
-
+from snowflake.snowpark.context import get_active_session
 
 # ==================================================
 # 1. CONFIGURE THE STREAMLIT APP
