@@ -33,7 +33,7 @@ try:
 
 except Exception as e:
     st.error("Unable to connect to Snowflake or retrieve fruit options.")
-    st.caption(f"Technical details: {e}")
+    st.exception(e)
     st.stop()
 
 # Smoothie order form
