@@ -13,6 +13,8 @@ st.set_page_config(
     layout="wide"
 )
 
+API_BASE_URL = "https://my.smoothiefroot.com/api/fruit"
+
 
 # ==================================================
 # 2. APP HEADING
@@ -32,7 +34,7 @@ def get_snowflake_connection():
 
 
 # ==================================================
-# 4. RETRIEVE FRUIT OPTIONS
+# 4. RETRIEVE FRUIT OPTIONS FROM SNOWFLAKE
 # ==================================================
 @st.cache_data(ttl=300)
 def get_fruit_options():
@@ -49,7 +51,7 @@ def get_fruit_options():
         fruit_df = conn.query(query, ttl=0)
 
     except Exception:
-        # Reinitialise a stale connection and retry the read.
+        # Reset a potentially stale connection and retry once.
         conn.reset()
         fruit_df = conn.query(query, ttl=0)
 
@@ -57,6 +59,8 @@ def get_fruit_options():
         fruit_df["FRUIT_NAME"]
         .dropna()
         .astype(str)
+        .str.strip()
+        .loc[lambda values: values != ""]
         .tolist()
     )
 
@@ -151,10 +155,95 @@ if submit_order:
 
 
 # ==================================================
-# 7. SMOOTHIEFROOT NUTRITION DATA FOR SELECTED FRUITS
+# 7. RETRIEVE THE SMOOTHIEFROOT FRUIT CATALOGUE
+# ==================================================
+@st.cache_data(ttl=600)
+def get_smoothiefroot_catalogue():
+    """Retrieve the available fruit records from the API."""
+    response = requests.get(
+        f"{API_BASE_URL}/all",
+        timeout=20
+    )
+
+    response.raise_for_status()
+    data = response.json()
+
+    # Support either a list or a dictionary containing a fruit list.
+    if isinstance(data, list):
+        return data
+
+    if isinstance(data, dict):
+        for key in ("fruits", "data", "results"):
+            if isinstance(data.get(key), list):
+                return data[key]
+
+        # Some APIs return a single fruit as a dictionary.
+        if data.get("name"):
+            return [data]
+
+    raise ValueError(
+        "The fruit catalogue returned an unexpected data format."
+    )
+
+
+# ==================================================
+# 8. MATCH SELECTED FRUITS TO NUTRITION DATA
+# ==================================================
+def normalize_fruit_name(name):
+    """Normalise names for matching without changing displayed names."""
+    return " ".join(str(name).strip().casefold().split())
+
+
+def get_selected_fruit_data(selected_fruits, catalogue):
+    """Match selected ingredients to fruit records in the catalogue."""
+    lookup = {}
+
+    for item in catalogue:
+        if isinstance(item, dict) and item.get("name"):
+            key = normalize_fruit_name(item["name"])
+            lookup[key] = item
+
+    results = []
+    unmatched = []
+
+    for selected_fruit in selected_fruits:
+        selected_key = normalize_fruit_name(selected_fruit)
+
+        # First try an exact name match.
+        fruit_data = lookup.get(selected_key)
+
+        # Try singular/plural variants only if needed.
+        if fruit_data is None:
+            if selected_key.endswith("ies"):
+                alternative = selected_key[:-3] + "y"
+            elif selected_key.endswith("s") and not selected_key.endswith("ss"):
+                alternative = selected_key[:-1]
+            else:
+                alternative = selected_key
+
+            fruit_data = lookup.get(alternative)
+
+        if fruit_data is not None:
+            results.append({
+                "Selected Fruit": selected_fruit,
+                **fruit_data
+            })
+        else:
+            unmatched.append(selected_fruit)
+
+    return results, unmatched
+
+
+# ==================================================
+# 9. DISPLAY NUTRITION DATA FOR SELECTED FRUITS
 # ==================================================
 st.divider()
 st.subheader("🍓 Nutrition Information for Your Fruits")
+
+st.write(
+    "Select your ingredients above, then retrieve their "
+    "available SmoothieFroot nutrition information."
+)
 
 if st.button("Get Nutrition Data", type="primary"):
 
@@ -162,56 +251,62 @@ if st.button("Get Nutrition Data", type="primary"):
         st.warning("Please select at least one fruit first.")
 
     else:
-        nutrition_results = []
+        try:
+            with st.spinner("Retrieving the fruit catalogue..."):
+                catalogue = get_smoothiefroot_catalogue()
 
-        for fruit in ingredients_list:
-            # Convert the selected fruit into an API URL slug.
-            fruit_slug = fruit.strip().lower().replace(" ", "-")
-
-            api_url = (
-                f"https://my.smoothiefroot.com/api/fruit/{fruit_slug}"
+            nutrition_results, unmatched_fruits = (
+                get_selected_fruit_data(
+                    ingredients_list,
+                    catalogue
+                )
             )
 
-            try:
-                with st.spinner(f"Retrieving data for {fruit}..."):
-                    response = requests.get(
-                        api_url,
-                        timeout=15
-                    )
+            if nutrition_results:
+                nutrition_df = pd.json_normalize(
+                    nutrition_results,
+                    sep="."
+                )
 
-                response.raise_for_status()
-                fruit_data = response.json()
+                st.success(
+                    "Nutrition data retrieved for "
+                    f"{len(nutrition_results)} selected fruit(s)."
+                )
 
-                # Add the fruit name to the displayed data.
-                if isinstance(fruit_data, dict):
-                    fruit_data["selected_fruit"] = fruit
-                    nutrition_results.append(fruit_data)
+                st.dataframe(
+                    nutrition_df,
+                    width="stretch",
+                    hide_index=True
+                )
 
-                elif isinstance(fruit_data, list):
-                    for item in fruit_data:
-                        if isinstance(item, dict):
-                            item["selected_fruit"] = fruit
-                            nutrition_results.append(item)
+            if unmatched_fruits:
+                st.warning(
+                    "No matching API record was found for: "
+                    + ", ".join(unmatched_fruits)
+                )
 
-            except requests.RequestException as e:
-                st.warning(f"Could not retrieve data for {fruit}: {e}")
+                st.caption(
+                    "The selected name may differ from the API's "
+                    "catalogue name, or the fruit may not be supported."
+                )
 
-            except ValueError:
-                st.warning(f"The API returned invalid JSON for {fruit}.")
+            if not nutrition_results and not unmatched_fruits:
+                st.info("No nutrition records were returned.")
 
-        # Display the retrieved nutrition information.
-        if nutrition_results:
-            nutrition_df = pd.json_normalize(nutrition_results)
-
-            st.success("Fruit information retrieved successfully!")
-
-            st.dataframe(
-                nutrition_df,
-                width="stretch",
-                hide_index=True
+        except requests.Timeout:
+            st.error(
+                "The SmoothieFroot API timed out. Please try again."
             )
-        else:
-            st.info(
-                "No fruit data was returned. "
-                "Check the selected fruit names and API response."
+
+        except requests.HTTPError as e:
+            st.error(
+                f"The SmoothieFroot API returned an HTTP error: {e}"
             )
+
+        except requests.RequestException as e:
+            st.error(
+                f"Unable to connect to the SmoothieFroot API: {e}"
+            )
+
+        except ValueError as e:
+            st.error(f"Unable to process the fruit data: {e}")
