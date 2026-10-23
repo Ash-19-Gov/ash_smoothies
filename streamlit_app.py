@@ -1,65 +1,99 @@
-
+```python
 # Import Python packages
 import streamlit as st
 from snowflake.snowpark.functions import col
 
-# Get the active Snowflake session
-session = get_active_session()
+# Configure the app
+st.set_page_config(
+    page_title="Customize Your Smoothie",
+    page_icon="🥤"
+)
 
 # Display the app title and introduction
 st.title(":cup_with_straw: Customize Your Smoothie! :cup_with_straw:")
 st.write("Create your own smoothie by selecting your favourite ingredients.")
 
-# Get the customer's name
-name_on_order = st.text_input("Name on smoothie order")
+# Connect to Snowflake from Streamlit Cloud
+try:
+    conn = st.connection("snowflake", type="snowflake")
+    session = conn.session()
 
-# Retrieve available fruit names from Snowflake
-fruit_names = (
-    session.table("SMOOTHIES.PUBLIC.FRUIT_OPTIONS")
-    .select(col("FRUIT_NAME"))
-)
+    # Retrieve available fruit names from Snowflake
+    fruit_names = (
+        session.table("SMOOTHIES.PUBLIC.FRUIT_OPTIONS")
+        .select(col("FRUIT_NAME"))
+        .sort(col("FRUIT_NAME"))
+    )
 
-# Convert fruit names into a Python list
-fruit_list = [
-    row["FRUIT_NAME"]
-    for row in fruit_names.collect()
-]
+    fruit_list = [
+        row["FRUIT_NAME"]
+        for row in fruit_names.collect()
+    ]
 
-# Allow customers to select a maximum of 5 ingredients
-ingredients_list = st.multiselect(
-    "Choose up to 5 ingredients:",
-    options=fruit_list,
-    max_selections=5
-)
+except Exception:
+    st.error(
+        "Unable to connect to Snowflake or retrieve the fruit options. "
+        "Please check your Snowflake connection settings and permissions."
+    )
+    st.stop()
 
-# Display results only when ingredients have been selected
-if ingredients_list:
+# Create the smoothie order form
+with st.form("smoothie_order_form"):
 
-    # Create an empty string
-    ingredients_string = ""
+    # Get the customer's name
+    name_on_order = st.text_input("Name on smoothie order")
 
-    # Convert the selected ingredients into a string
-    for fruit_chosen in ingredients_list:
-        ingredients_string += fruit_chosen
+    # Allow customers to select a maximum of 5 ingredients
+    ingredients_list = st.multiselect(
+        "Choose up to 5 ingredients:",
+        options=fruit_list,
+        max_selections=5
+    )
 
-    # Display the selected ingredients
-    st.write(ingredients_string)
+    # Submit button
+    submit_order = st.form_submit_button("Submit Order")
 
-    # Build the SQL INSERT statement
-    my_insert_stmt = """INSERT INTO SMOOTHIES.PUBLIC.ORDERS
-        (NAME_ON_ORDER, INGREDIENTS)
-        VALUES ('""" + name_on_order + """', '""" + ingredients_string + """')"""
+# Process the order only when the form is submitted
+if submit_order:
 
-    # Display the SQL statement
-    st.write(my_insert_stmt)
+    # Validate the customer's input
+    if not name_on_order.strip():
+        st.warning("Please enter your name.")
 
-    # Add a Submit button
-    submit_order = st.button("Submit Order")
+    elif not ingredients_list:
+        st.warning("Please select at least one ingredient.")
 
-    # Insert the order into Snowflake only when submitted
-    if submit_order:
-        session.sql(my_insert_stmt).collect()
-        st.success(
-            "Your smoothie is ordered, " + name_on_order + "!",
-            icon="✅"
-        )
+    else:
+        # Separate ingredients with commas
+        ingredients_string = ", ".join(ingredients_list)
+
+        try:
+            # Insert the order using parameterized SQL
+            insert_statement = """
+                INSERT INTO SMOOTHIES.PUBLIC.ORDERS
+                    (NAME_ON_ORDER, INGREDIENTS)
+                VALUES (?, ?)
+            """
+
+            session.sql(
+                insert_statement,
+                params=[
+                    name_on_order.strip(),
+                    ingredients_string
+                ]
+            ).collect()
+
+            # Confirm successful submission
+            st.success(
+                f"Your smoothie is ordered, {name_on_order.strip()}!",
+                icon="✅"
+            )
+
+            st.write("**Your ingredients:**", ingredients_string)
+
+        except Exception:
+            st.error(
+                "Your order could not be saved. "
+                "Please check the Snowflake connection and table permissions."
+            )
+```
