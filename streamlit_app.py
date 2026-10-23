@@ -158,7 +158,7 @@ if submit_order:
 
 
 # ==================================================
-# 7. RETRIEVE NUTRITION DATA USING fruit_chosen
+# 7. RETRIEVE THE FRUIT CATALOGUE
 # ==================================================
 st.divider()
 
@@ -166,8 +166,43 @@ st.subheader("🍓 Nutrition Information for Your Fruits")
 
 st.write(
     "Select your fruits above and retrieve their available "
-    "information from the SmoothieFroot API."
+    "nutrition information from the SmoothieFroot API."
 )
+
+
+@st.cache_data(ttl=600)
+def get_smoothiefroot_catalogue():
+    """Retrieve the fruit catalogue from the API."""
+
+    response = requests.get(
+        f"{API_BASE_URL}/all",
+        timeout=20
+    )
+
+    response.raise_for_status()
+    data = response.json()
+
+    if isinstance(data, list):
+        return data
+
+    if isinstance(data, dict):
+        for key in ("fruits", "data", "results"):
+            if isinstance(data.get(key), list):
+                return data[key]
+
+        if data.get("name"):
+            return [data]
+
+    raise ValueError("Unexpected fruit catalogue format.")
+
+
+def normalize_fruit_name(name):
+    """Standardise fruit names for matching."""
+
+    return " ".join(
+        str(name).strip().casefold().split()
+    )
+
 
 if st.button("Get Nutrition Data", type="primary"):
 
@@ -176,82 +211,49 @@ if st.button("Get Nutrition Data", type="primary"):
     )
 
     if not selected_fruits:
-
-        st.warning(
-            "Please select at least one fruit in the "
-            "Build Your Smoothie section first."
-        )
+        st.warning("Please select at least one fruit first.")
 
     else:
+        try:
+            with st.spinner("Retrieving fruit information..."):
+                catalogue = get_smoothiefroot_catalogue()
 
-        st.write("### Your Fruit Information")
+            fruit_lookup = {
+                normalize_fruit_name(item["name"]): item
+                for item in catalogue
+                if isinstance(item, dict) and item.get("name")
+            }
 
-        for fruit_chosen in selected_fruits:
+            st.subheader("Your Fruit Information")
 
-            # Prepare the selected fruit for the API URL.
-            fruit_name = (
-                fruit_chosen.strip()
-                .lower()
-                .replace(" ", "-")
-            )
+            for fruit_chosen in selected_fruits:
 
-            # Build the API URL using fruit_chosen.
-            api_url = f"{API_BASE_URL}/{fruit_name}"
+                fruit_data = fruit_lookup.get(
+                    normalize_fruit_name(fruit_chosen)
+                )
 
-            try:
-                with st.spinner(
-                    f"Retrieving information for {fruit_chosen}..."
-                ):
-
-                    response = requests.get(
-                        api_url,
-                        timeout=20
-                    )
-
-                    response.raise_for_status()
-                    fruit_data = response.json()
-
-                st.subheader(fruit_chosen)
-
-                # Display the information returned by the API.
-                if isinstance(fruit_data, dict):
-
-                    nutrition = fruit_data.get("nutritions")
-
-                    if isinstance(nutrition, dict):
-                        st.write("**Nutrition information**")
-                        st.json(nutrition)
-
-                    st.write("**Full API response**")
+                if fruit_data is not None:
+                    st.markdown(f"**{fruit_chosen}**")
                     st.json(fruit_data)
 
                 else:
-                    st.json(fruit_data)
+                    st.warning(
+                        f"No matching API record was found for "
+                        f"{fruit_chosen}."
+                    )
 
-            except requests.Timeout:
-
-                st.warning(
-                    f"The API timed out while retrieving "
-                    f"{fruit_chosen}. Please try again."
+            with st.expander("View fruit names available in the API"):
+                available_names = sorted(
+                    item["name"]
+                    for item in catalogue
+                    if isinstance(item, dict) and item.get("name")
                 )
 
-            except requests.HTTPError as e:
+                st.write(available_names)
 
-                st.warning(
-                    f"The API could not find information for "
-                    f"{fruit_chosen}. Details: {e}"
-                )
+        except requests.RequestException as e:
+            st.error(f"Unable to retrieve the fruit catalogue: {e}")
 
-            except requests.RequestException as e:
+        except ValueError as e:
+            st.error(f"Unable to process the API response: {e}")
 
-                st.error(
-                    f"Unable to connect to the API for "
-                    f"{fruit_chosen}: {e}"
-                )
-
-            except ValueError:
-
-                st.warning(
-                    f"The API returned an invalid response "
-                    f"for {fruit_chosen}."
-                )
