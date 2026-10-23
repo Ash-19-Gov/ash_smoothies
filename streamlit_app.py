@@ -2,7 +2,6 @@
 import streamlit as st
 import requests
 import pandas as pd
-from snowflake.snowpark.functions import col
 
 
 # ==================================================
@@ -16,7 +15,7 @@ st.set_page_config(
 
 
 # ==================================================
-# 2. DISPLAY THE APP HEADING
+# 2. APP HEADING
 # ==================================================
 st.title("🥤 Customize Your Smoothie!")
 st.write(
@@ -25,33 +24,51 @@ st.write(
 
 
 # ==================================================
-# 3. RETRIEVE FRUIT OPTIONS FROM SNOWFLAKE
+# 3. SNOWFLAKE CONNECTION
+# ==================================================
+def get_snowflake_connection():
+    """Return the Streamlit-managed Snowflake connection."""
+    return st.connection("snowflake", type="snowflake")
+
+
+# ==================================================
+# 4. RETRIEVE FRUIT OPTIONS
 # ==================================================
 @st.cache_data(ttl=300)
 def get_fruit_options():
-    """Retrieve fruit options from the Snowflake table."""
-    conn = st.connection("snowflake", type="snowflake")
-    session = conn.session()
+    """Retrieve available fruit options from Snowflake."""
+    conn = get_snowflake_connection()
+
+    query = """
+        SELECT FRUIT_NAME
+        FROM SMOOTHIES.PUBLIC.FRUIT_OPTIONS
+        ORDER BY FRUIT_NAME
+    """
 
     try:
-        fruit_rows = (
-            session.table("SMOOTHIES.PUBLIC.FRUIT_OPTIONS")
-            .select(col("FRUIT_NAME"))
-            .sort(col("FRUIT_NAME"))
-            .collect()
-        )
+        fruit_df = conn.query(query, ttl=0)
 
-        return [row["FRUIT_NAME"] for row in fruit_rows]
+    except Exception:
+        # Reset a potentially stale connection and retry once.
+        conn.reset()
+        fruit_df = conn.query(query, ttl=0)
 
-    finally:
-        session.close()
+    return (
+        fruit_df["FRUIT_NAME"]
+        .dropna()
+        .astype(str)
+        .tolist()
+    )
 
 
 try:
     fruit_list = get_fruit_options()
 
     if not fruit_list:
-        st.warning("No fruit options were found in Snowflake.")
+        st.warning(
+            "No fruit options were found in Snowflake. "
+            "Please check the FRUIT_OPTIONS table."
+        )
         st.stop()
 
 except Exception as e:
@@ -61,12 +78,12 @@ except Exception as e:
 
 
 # ==================================================
-# 4. BUILD AND SUBMIT THE SMOOTHIE ORDER
+# 5. BUILD THE SMOOTHIE ORDER FORM
 # ==================================================
 st.subheader("Build Your Smoothie")
 
 with st.form("smoothie_order_form"):
-    name_on_order = st.text_input(
+    customer_name = st.text_input(
         "Name on smoothie order",
         placeholder="Enter your name"
     )
@@ -83,8 +100,11 @@ with st.form("smoothie_order_form"):
     )
 
 
+# ==================================================
+# 6. SAVE THE SMOOTHIE ORDER TO SNOWFLAKE
+# ==================================================
 if submit_order:
-    customer_name = name_on_order.strip()
+    customer_name = customer_name.strip()
 
     if not customer_name:
         st.warning("Please enter your name.")
@@ -94,46 +114,55 @@ if submit_order:
 
     else:
         ingredients_string = ", ".join(ingredients_list)
-        session = None
+        order_saved = False
 
         try:
-            conn = st.connection(
-                "snowflake",
-                type="snowflake"
-            )
-            session = conn.session()
+            conn = get_snowflake_connection()
 
-            session.sql(
-                """
+            insert_query = """
                 INSERT INTO SMOOTHIES.PUBLIC.ORDERS
                     (NAME_ON_ORDER, INGREDIENTS)
                 VALUES (?, ?)
-                """,
-                params=[
-                    customer_name,
-                    ingredients_string
-                ]
-            ).collect()
+            """
 
+            # Retry once if the first attempt encounters a connection error.
+            try:
+                conn.query(
+                    insert_query,
+                    params=[
+                        customer_name,
+                        ingredients_string
+                    ],
+                    ttl=0
+                )
+
+            except Exception:
+                conn.reset()
+
+                conn.query(
+                    insert_query,
+                    params=[
+                        customer_name,
+                        ingredients_string
+                    ],
+                    ttl=0
+                )
+
+            order_saved = True
+
+        except Exception as e:
+            st.error("Your smoothie order could not be saved.")
+            st.exception(e)
+
+        if order_saved:
             st.success(
                 f"Your smoothie is ordered, {customer_name}!"
             )
-            st.write(
-                "**Your ingredients:**",
-                ingredients_string
-            )
-
-        except Exception as e:
-            st.error("Your order could not be saved.")
-            st.exception(e)
-
-        finally:
-            if session is not None:
-                session.close()
+            st.write("**Your ingredients:**", ingredients_string)
 
 
 # ==================================================
-# 5. SMOOTHIEFROOT WATERMELON API
+# 7. WATERMELON API INTEGRATION
 # ==================================================
 st.divider()
 st.subheader("🍉 SmoothieFroot API Example")
@@ -151,26 +180,26 @@ if st.button("Get Watermelon Data", type="primary"):
             )
 
         response.raise_for_status()
-        smoothiefroot_data = response.json()
+        api_data = response.json()
 
         st.success("Watermelon data retrieved successfully!")
 
-        # Display the original JSON response
+        # Display the original API response.
         with st.expander("View API Response (JSON)"):
-            st.json(smoothiefroot_data)
+            st.json(api_data)
 
-        # Convert JSON into a readable DataFrame
-        if isinstance(smoothiefroot_data, (dict, list)):
-            sf_df = pd.json_normalize(smoothiefroot_data)
+        # Convert the API response to a DataFrame.
+        if isinstance(api_data, (dict, list)):
+            api_df = pd.json_normalize(api_data)
         else:
-            sf_df = pd.DataFrame(
-                {"response": [str(smoothiefroot_data)]}
+            api_df = pd.DataFrame(
+                {"response": [str(api_data)]}
             )
 
         st.write("### SmoothieFroot DataFrame")
 
         st.dataframe(
-            sf_df,
+            api_df,
             width="stretch",
             hide_index=True
         )
@@ -190,5 +219,5 @@ if st.button("Get Watermelon Data", type="primary"):
 
     except ValueError:
         st.error(
-            "The API response could not be converted to valid JSON."
+            "The API response was not valid JSON."
         )
