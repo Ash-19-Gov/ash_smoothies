@@ -114,12 +114,9 @@ if submit_order:
             finally:
                 session.close()
 
-        except Exception:
-            st.error(
-                "Your order could not be saved. "
-                "Please check the Snowflake connection and try again."
-            )
-
+     except Exception as e:
+    st.error("Your order could not be saved.")
+    st.exception(e)
 # --------------------------------------------------
 # 4. Retrieve Watermelon data from the API
 # --------------------------------------------------
