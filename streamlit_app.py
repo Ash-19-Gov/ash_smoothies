@@ -1,6 +1,8 @@
 
 import streamlit as st
 import requests
+import json
+import re
 
 
 # ==================================================
@@ -50,7 +52,6 @@ def get_fruit_options():
 
     try:
         fruit_df = conn.query(query, ttl=0)
-
     except Exception:
         conn.reset()
         fruit_df = conn.query(query, ttl=0)
@@ -162,7 +163,7 @@ if submit_order:
 # ==================================================
 @st.cache_data(ttl=600)
 def get_smoothiefroot_catalogue():
-    """Retrieve the fruit catalogue from the API."""
+    """Retrieve fruit records from the API catalogue."""
 
     response = requests.get(
         f"{API_BASE_URL}/all",
@@ -192,25 +193,32 @@ def get_smoothiefroot_catalogue():
 # 8. NORMALISE AND MATCH FRUIT NAMES
 # ==================================================
 def normalize_fruit_name(name):
-    """Standardise fruit names for comparison."""
+    """Standardise names for case-insensitive matching."""
 
     return " ".join(
         str(name).strip().casefold().split()
     )
 
 
-def find_fruit_data(fruit_chosen, fruit_lookup):
-    """Match Snowflake fruit names to API catalogue names."""
+def compact_fruit_name(name):
+    """Remove spaces and punctuation for alternative matching."""
+
+    return re.sub(
+        r"[^a-z0-9]",
+        "",
+        normalize_fruit_name(name)
+    )
+
+
+def find_fruit_data(fruit_chosen, fruit_lookup, compact_lookup):
+    """Match a selected fruit to an API catalogue record."""
 
     selected_name = normalize_fruit_name(fruit_chosen)
 
-    # First, try an exact match.
-    if selected_name in fruit_lookup:
-        return fruit_lookup[selected_name]
-
-    # Handle known differences between Snowflake and API names.
+    # Explicit aliases for known differences.
     aliases = {
         "apples": "apple",
+        "blueberries": "blueberry",
         "dragon fruit": "dragonfruit",
         "fig": "figs",
         "ugli fruit": "ugli fruit (jamaican tangelo)",
@@ -219,34 +227,121 @@ def find_fruit_data(fruit_chosen, fruit_lookup):
         "jujube": "ziziphus jujube"
     }
 
-    api_name = aliases.get(selected_name)
+    candidates = [selected_name]
 
-    if api_name:
-        return fruit_lookup.get(api_name)
+    if selected_name in aliases:
+        candidates.append(aliases[selected_name])
 
-    # Try a basic singular/plural alternative.
+    # Try basic singular/plural alternatives.
     if selected_name.endswith("ies"):
-        alternative = selected_name[:-3] + "y"
-
+        candidates.append(selected_name[:-3] + "y")
     elif selected_name.endswith("s") and not selected_name.endswith("ss"):
-        alternative = selected_name[:-1]
+        candidates.append(selected_name[:-1])
 
-    else:
-        alternative = selected_name
+    # Match using normalised names first.
+    for candidate in candidates:
+        if candidate in fruit_lookup:
+            return fruit_lookup[candidate]
 
-    return fruit_lookup.get(alternative)
+    # Try matching names without spaces or punctuation.
+    for candidate in candidates:
+        compact_name = compact_fruit_name(candidate)
+
+        if compact_name in compact_lookup:
+            return compact_lookup[compact_name]
+
+    return None
 
 
 # ==================================================
-# 9. DISPLAY NUTRITION INFORMATION
+# 9. FIND AND DISPLAY NUTRITION INFORMATION
+# ==================================================
+def find_nutrition_data(fruit_data):
+    """Find nutrition information under common API field names."""
+
+    nutrition_keys = {
+        "nutrition",
+        "nutritions",
+        "nutritioninfo",
+        "nutrition_info",
+        "nutritionalinfo",
+        "nutritional_info",
+        "nutritioninformation",
+        "nutrition_information"
+    }
+
+    def search_nested(value):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                normalised_key = compact_fruit_name(key)
+
+                if normalised_key in {
+                    compact_fruit_name(k) for k in nutrition_keys
+                }:
+                    if isinstance(item, (dict, list)):
+                        return item
+
+                result = search_nested(item)
+
+                if result is not None:
+                    return result
+
+        elif isinstance(value, list):
+            for item in value:
+                result = search_nested(item)
+
+                if result is not None:
+                    return result
+
+        return None
+
+    nutrition = search_nested(fruit_data)
+
+    if nutrition is not None:
+        return nutrition
+
+    # Some API responses provide nutrition values directly
+    # rather than placing them inside a nutrition object.
+    nutrition_fields = {
+        "calories",
+        "energy",
+        "carbohydrates",
+        "carbs",
+        "fat",
+        "protein",
+        "sugar",
+        "sugars",
+        "fiber",
+        "fibre",
+        "serving_size"
+    }
+
+    direct_values = {
+        key: value
+        for key, value in fruit_data.items()
+        if compact_fruit_name(key) in {
+            compact_fruit_name(field)
+            for field in nutrition_fields
+        }
+        and not isinstance(value, (dict, list))
+    }
+
+    if direct_values:
+        return direct_values
+
+    return None
+
+
+# ==================================================
+# 10. DISPLAY FRUIT INFORMATION
 # ==================================================
 st.divider()
 
 st.subheader("🍓 Nutrition Information for Your Fruits")
 
 st.write(
-    "Select your fruits above and retrieve their available "
-    "nutrition information from the SmoothieFroot API."
+    "Select your fruits above and retrieve the available "
+    "information from the SmoothieFroot API."
 )
 
 if st.button("Get Nutrition Data", type="primary"):
@@ -268,63 +363,58 @@ if st.button("Get Nutrition Data", type="primary"):
             with st.spinner("Retrieving fruit information..."):
                 catalogue = get_smoothiefroot_catalogue()
 
-            # Create a lookup using the API's actual fruit names.
-            fruit_lookup = {
-                normalize_fruit_name(item["name"]): item
-                for item in catalogue
-                if isinstance(item, dict) and item.get("name")
-            }
+            # Build searchable dictionaries from API records.
+            fruit_lookup = {}
+            compact_lookup = {}
+
+            for item in catalogue:
+                if isinstance(item, dict) and item.get("name"):
+                    api_name = normalize_fruit_name(item["name"])
+
+                    fruit_lookup[api_name] = item
+                    compact_lookup[
+                        compact_fruit_name(item["name"])
+                    ] = item
 
             st.subheader("Your Fruit Information")
 
             for fruit_chosen in selected_fruits:
 
-                # Match the selected fruit to the API catalogue.
                 fruit_data = find_fruit_data(
                     fruit_chosen,
-                    fruit_lookup
+                    fruit_lookup,
+                    compact_lookup
                 )
 
-                if fruit_data is not None:
+                st.markdown(f"### {fruit_chosen}")
 
-                    st.markdown(f"**{fruit_chosen}**")
-
-                    # Display available nutrition information.
-                    nutrition = fruit_data.get("nutritions")
-
-                    if isinstance(nutrition, dict):
-                        st.write("**Nutrition information**")
-                        st.json(nutrition)
-
-                    else:
-                        st.info(
-                            "No separate nutrition object was "
-                            "provided for this fruit."
-                        )
-
-                    # Display the complete API record.
-                    with st.expander(
-                        f"View full API record: {fruit_chosen}"
-                    ):
-                        st.json(fruit_data)
-
-                else:
+                if fruit_data is None:
 
                     st.warning(
                         f"No matching API record was found for "
                         f"{fruit_chosen}."
                     )
 
-            # Show the catalogue names to help troubleshoot matches.
-            with st.expander("View fruit names available in the API"):
+                    continue
 
-                available_names = sorted(
-                    item["name"]
-                    for item in catalogue
-                    if isinstance(item, dict) and item.get("name")
-                )
+                nutrition = find_nutrition_data(fruit_data)
 
-                st.write(available_names)
+                if nutrition is not None:
+                    st.write("**Available nutrition information**")
+                    st.json(nutrition)
+
+                else:
+                    st.warning(
+                        "A fruit record was found, but no recognised "
+                        "nutrition field was identified. Expand the "
+                        "full API record below to inspect the response."
+                    )
+
+                # Keep the complete API record available for diagnosis.
+                with st.expander(
+                    f"View full API record: {fruit_chosen}"
+                ):
+                    st.json(fruit_data)
 
         except requests.Timeout:
 
@@ -344,8 +434,33 @@ if st.button("Get Nutrition Data", type="primary"):
                 f"Unable to connect to the SmoothieFroot API: {e}"
             )
 
-        except ValueError as e:
+        except (ValueError, TypeError) as e:
 
             st.error(
-                f"Unable to process the fruit data: {e}"
+                f"Unable to process the API response: {e}"
             )
+
+
+# ==================================================
+# 11. OPTIONAL API CATALOGUE DIAGNOSTICS
+# ==================================================
+with st.expander("View fruit names available in the API"):
+
+    if st.button("Load Available Fruit Names"):
+
+        try:
+            catalogue = get_smoothiefroot_catalogue()
+
+            available_names = sorted(
+                item["name"]
+                for item in catalogue
+                if isinstance(item, dict) and item.get("name")
+            )
+
+            st.write(available_names)
+
+        except requests.RequestException as e:
+            st.error(f"Unable to load fruit names: {e}")
+
+        except ValueError as e:
+            st.error(f"Unable to process the API response: {e}")
