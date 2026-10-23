@@ -151,54 +151,67 @@ if submit_order:
 
 
 # ==================================================
-# 7. SMOOTHIEFROOT WATERMELON API
+# 7. SMOOTHIEFROOT NUTRITION DATA FOR SELECTED FRUITS
 # ==================================================
 st.divider()
-st.subheader("🍉 SmoothieFroot API Example")
+st.subheader("🍓 Nutrition Information for Your Fruits")
 
-if st.button("Get Watermelon Data", type="primary"):
-    api_url = (
-        "https://my.smoothiefroot.com/api/fruit/watermelon"
-    )
+if st.button("Get Nutrition Data", type="primary"):
 
-    try:
-        with st.spinner("Retrieving Watermelon data..."):
-            response = requests.get(
-                api_url,
-                timeout=15
+    if not ingredients_list:
+        st.warning("Please select at least one fruit first.")
+
+    else:
+        nutrition_results = []
+
+        for fruit in ingredients_list:
+            # Convert the selected fruit into an API URL slug.
+            fruit_slug = fruit.strip().lower().replace(" ", "-")
+
+            api_url = (
+                f"https://my.smoothiefroot.com/api/fruit/{fruit_slug}"
             )
 
-        response.raise_for_status()
-        api_data = response.json()
+            try:
+                with st.spinner(f"Retrieving data for {fruit}..."):
+                    response = requests.get(
+                        api_url,
+                        timeout=15
+                    )
 
-        st.success("Watermelon data retrieved successfully!")
+                response.raise_for_status()
+                fruit_data = response.json()
 
-        with st.expander("View API Response (JSON)"):
-            st.json(api_data)
+                # Add the fruit name to the displayed data.
+                if isinstance(fruit_data, dict):
+                    fruit_data["selected_fruit"] = fruit
+                    nutrition_results.append(fruit_data)
 
-        if isinstance(api_data, (dict, list)):
-            api_df = pd.json_normalize(api_data)
+                elif isinstance(fruit_data, list):
+                    for item in fruit_data:
+                        if isinstance(item, dict):
+                            item["selected_fruit"] = fruit
+                            nutrition_results.append(item)
+
+            except requests.RequestException as e:
+                st.warning(f"Could not retrieve data for {fruit}: {e}")
+
+            except ValueError:
+                st.warning(f"The API returned invalid JSON for {fruit}.")
+
+        # Display the retrieved nutrition information.
+        if nutrition_results:
+            nutrition_df = pd.json_normalize(nutrition_results)
+
+            st.success("Fruit information retrieved successfully!")
+
+            st.dataframe(
+                nutrition_df,
+                width="stretch",
+                hide_index=True
+            )
         else:
-            api_df = pd.DataFrame(
-                {"response": [str(api_data)]}
+            st.info(
+                "No fruit data was returned. "
+                "Check the selected fruit names and API response."
             )
-
-        st.write("### SmoothieFroot DataFrame")
-
-        st.dataframe(
-            api_df,
-            width="stretch",
-            hide_index=True
-        )
-
-    except requests.Timeout:
-        st.error("The API request timed out. Please try again.")
-
-    except requests.HTTPError as e:
-        st.error(f"The API returned an HTTP error: {e}")
-
-    except requests.RequestException as e:
-        st.error(f"Unable to reach the API: {e}")
-
-    except ValueError:
-        st.error("The API response was not valid JSON.")
