@@ -96,4 +96,4 @@ if submit_order:
                 "Your order could not be saved. "
                 "Please check the Snowflake connection and table permissions."
             )
-```
+
