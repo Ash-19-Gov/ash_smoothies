@@ -29,7 +29,7 @@ st.write(
 # 3. SNOWFLAKE CONNECTION
 # ==================================================
 def get_snowflake_connection():
-    """Get the Streamlit-managed Snowflake connection."""
+    """Return the Streamlit-managed Snowflake connection."""
     return st.connection("snowflake", type="snowflake")
 
 
@@ -38,7 +38,7 @@ def get_snowflake_connection():
 # ==================================================
 @st.cache_data(ttl=300)
 def get_fruit_options():
-    """Retrieve fruit options from Snowflake."""
+    """Retrieve available fruit options from Snowflake."""
     conn = get_snowflake_connection()
 
     query = """
@@ -51,7 +51,6 @@ def get_fruit_options():
         fruit_df = conn.query(query, ttl=0)
 
     except Exception:
-        # Reset a potentially stale connection and retry once.
         conn.reset()
         fruit_df = conn.query(query, ttl=0)
 
@@ -79,7 +78,7 @@ except Exception as e:
 
 
 # ==================================================
-# 5. SMOOTHIE ORDER FORM
+# 5. BUILD THE SMOOTHIE ORDER FORM
 # ==================================================
 st.subheader("Build Your Smoothie")
 
@@ -92,7 +91,8 @@ with st.form("smoothie_order_form"):
     ingredients_list = st.multiselect(
         "Choose up to 5 ingredients:",
         options=fruit_list,
-        max_selections=5
+        max_selections=5,
+        key="selected_fruits"
     )
 
     submit_order = st.form_submit_button(
@@ -101,8 +101,12 @@ with st.form("smoothie_order_form"):
     )
 
 
+# Keep the selected ingredients available outside the form.
+selected_fruits = st.session_state.get("selected_fruits", [])
+
+
 # ==================================================
-# 6. SAVE ORDER TO SNOWFLAKE
+# 6. SAVE THE SMOOTHIE ORDER TO SNOWFLAKE
 # ==================================================
 if submit_order:
     customer_name = customer_name.strip()
@@ -110,11 +114,11 @@ if submit_order:
     if not customer_name:
         st.warning("Please enter your name.")
 
-    elif not ingredients_list:
+    elif not selected_fruits:
         st.warning("Please select at least one ingredient.")
 
     else:
-        ingredients_string = ", ".join(ingredients_list)
+        ingredients_string = ", ".join(selected_fruits)
         session = None
 
         try:
@@ -168,7 +172,6 @@ def get_smoothiefroot_catalogue():
     response.raise_for_status()
     data = response.json()
 
-    # Support either a list or a dictionary containing a fruit list.
     if isinstance(data, list):
         return data
 
@@ -177,51 +180,51 @@ def get_smoothiefroot_catalogue():
             if isinstance(data.get(key), list):
                 return data[key]
 
-        # Some APIs return a single fruit as a dictionary.
         if data.get("name"):
             return [data]
 
     raise ValueError(
-        "The fruit catalogue returned an unexpected data format."
+        "The API returned an unexpected fruit catalogue format."
     )
 
 
 # ==================================================
-# 8. MATCH SELECTED FRUITS TO NUTRITION DATA
+# 8. MATCH SELECTED FRUITS TO API RECORDS
 # ==================================================
 def normalize_fruit_name(name):
-    """Normalise names for matching without changing displayed names."""
-    return " ".join(str(name).strip().casefold().split())
+    """Normalise fruit names for comparison."""
+    return " ".join(
+        str(name).strip().casefold().split()
+    )
 
 
 def get_selected_fruit_data(selected_fruits, catalogue):
-    """Match selected ingredients to fruit records in the catalogue."""
-    lookup = {}
+    """Match selected ingredients to API fruit records."""
+    fruit_lookup = {}
 
     for item in catalogue:
         if isinstance(item, dict) and item.get("name"):
-            key = normalize_fruit_name(item["name"])
-            lookup[key] = item
+            fruit_lookup[
+                normalize_fruit_name(item["name"])
+            ] = item
 
     results = []
     unmatched = []
 
     for selected_fruit in selected_fruits:
-        selected_key = normalize_fruit_name(selected_fruit)
+        key = normalize_fruit_name(selected_fruit)
+        fruit_data = fruit_lookup.get(key)
 
-        # First try an exact name match.
-        fruit_data = lookup.get(selected_key)
-
-        # Try singular/plural variants only if needed.
+        # Handle common singular/plural differences.
         if fruit_data is None:
-            if selected_key.endswith("ies"):
-                alternative = selected_key[:-3] + "y"
-            elif selected_key.endswith("s") and not selected_key.endswith("ss"):
-                alternative = selected_key[:-1]
+            if key.endswith("ies"):
+                alternative = key[:-3] + "y"
+            elif key.endswith("s") and not key.endswith("ss"):
+                alternative = key[:-1]
             else:
-                alternative = selected_key
+                alternative = key
 
-            fruit_data = lookup.get(alternative)
+            fruit_data = fruit_lookup.get(alternative)
 
         if fruit_data is not None:
             results.append({
@@ -235,29 +238,36 @@ def get_selected_fruit_data(selected_fruits, catalogue):
 
 
 # ==================================================
-# 9. DISPLAY NUTRITION DATA FOR SELECTED FRUITS
+# 9. DISPLAY NUTRITION DATA
 # ==================================================
 st.divider()
 st.subheader("🍓 Nutrition Information for Your Fruits")
 
 st.write(
-    "Select your ingredients above, then retrieve their "
-    "available SmoothieFroot nutrition information."
+    "Choose your fruits above and retrieve the available "
+    "nutrition information without submitting an order."
 )
 
 if st.button("Get Nutrition Data", type="primary"):
 
-    if not ingredients_list:
-        st.warning("Please select at least one fruit first.")
+    # Read directly from session state so the selection is
+    # available even when the order form has not been submitted.
+    selected_fruits = st.session_state.get("selected_fruits", [])
+
+    if not selected_fruits:
+        st.warning(
+            "Please select at least one fruit in the "
+            "Build Your Smoothie section first."
+        )
 
     else:
         try:
-            with st.spinner("Retrieving the fruit catalogue..."):
+            with st.spinner("Retrieving fruit nutrition data..."):
                 catalogue = get_smoothiefroot_catalogue()
 
             nutrition_results, unmatched_fruits = (
                 get_selected_fruit_data(
-                    ingredients_list,
+                    selected_fruits,
                     catalogue
                 )
             )
@@ -269,7 +279,7 @@ if st.button("Get Nutrition Data", type="primary"):
                 )
 
                 st.success(
-                    "Nutrition data retrieved for "
+                    f"Retrieved data for "
                     f"{len(nutrition_results)} selected fruit(s)."
                 )
 
@@ -286,8 +296,8 @@ if st.button("Get Nutrition Data", type="primary"):
                 )
 
                 st.caption(
-                    "The selected name may differ from the API's "
-                    "catalogue name, or the fruit may not be supported."
+                    "The API catalogue may use different fruit names, "
+                    "or these fruits may not be supported."
                 )
 
             if not nutrition_results and not unmatched_fruits:
