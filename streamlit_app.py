@@ -5,9 +5,9 @@ import pandas as pd
 from snowflake.snowpark.functions import col
 
 
-# --------------------------------------------------
-# 1. Configure the Streamlit app
-# --------------------------------------------------
+# ==================================================
+# 1. CONFIGURE THE STREAMLIT APP
+# ==================================================
 st.set_page_config(
     page_title="Customize Your Smoothie",
     page_icon="🥤",
@@ -15,21 +15,21 @@ st.set_page_config(
 )
 
 
-# --------------------------------------------------
-# 2. Display the app heading
-# --------------------------------------------------
+# ==================================================
+# 2. DISPLAY THE APP HEADING
+# ==================================================
 st.title("🥤 Customize Your Smoothie!")
 st.write(
     "Create your own smoothie by selecting your favourite ingredients."
 )
 
 
-# --------------------------------------------------
-# 3. Retrieve fruit options from Snowflake
-# --------------------------------------------------
+# ==================================================
+# 3. RETRIEVE FRUIT OPTIONS FROM SNOWFLAKE
+# ==================================================
 @st.cache_data(ttl=300)
 def get_fruit_options():
-    """Retrieve available fruit options from Snowflake."""
+    """Retrieve fruit options from the Snowflake table."""
     conn = st.connection("snowflake", type="snowflake")
     session = conn.session()
 
@@ -51,20 +51,18 @@ try:
     fruit_list = get_fruit_options()
 
     if not fruit_list:
-        st.warning("No fruit options are currently available.")
+        st.warning("No fruit options were found in Snowflake.")
         st.stop()
 
-except Exception:
-    st.error(
-        "Unable to retrieve fruit options from Snowflake. "
-        "Please check the connection and table permissions."
-    )
+except Exception as e:
+    st.error("Unable to retrieve fruit options from Snowflake.")
+    st.exception(e)
     st.stop()
 
 
-# --------------------------------------------------
-# 4. Build and submit the smoothie order
-# --------------------------------------------------
+# ==================================================
+# 4. BUILD AND SUBMIT THE SMOOTHIE ORDER
+# ==================================================
 st.subheader("Build Your Smoothie")
 
 with st.form("smoothie_order_form"):
@@ -120,7 +118,6 @@ if submit_order:
             st.success(
                 f"Your smoothie is ordered, {customer_name}!"
             )
-
             st.write(
                 "**Your ingredients:**",
                 ingredients_string
@@ -135,9 +132,9 @@ if submit_order:
                 session.close()
 
 
-# --------------------------------------------------
-# 5. Retrieve Watermelon data from the API
-# --------------------------------------------------
+# ==================================================
+# 5. SMOOTHIEFROOT WATERMELON API
+# ==================================================
 st.divider()
 st.subheader("🍉 SmoothieFroot API Example")
 
@@ -158,11 +155,11 @@ if st.button("Get Watermelon Data", type="primary"):
 
         st.success("Watermelon data retrieved successfully!")
 
-        # Display the original API response
+        # Display the original JSON response
         with st.expander("View API Response (JSON)"):
             st.json(smoothiefroot_data)
 
-        # Convert the JSON response into a DataFrame
+        # Convert JSON into a readable DataFrame
         if isinstance(smoothiefroot_data, (dict, list)):
             sf_df = pd.json_normalize(smoothiefroot_data)
         else:
@@ -186,10 +183,9 @@ if st.button("Get Watermelon Data", type="primary"):
     except requests.HTTPError as e:
         st.error(f"The API returned an HTTP error: {e}")
 
-    except requests.RequestException:
+    except requests.RequestException as e:
         st.error(
-            "Unable to reach the SmoothieFroot API. "
-            "Please check your connection and try again."
+            f"Unable to reach the SmoothieFroot API: {e}"
         )
 
     except ValueError:
